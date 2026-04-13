@@ -90,6 +90,16 @@ class AdminService:
             q = q.filter(Theater.is_active == True)
         return q.offset(skip).limit(limit).all()
 
+    @staticmethod
+    def toggle_theater_status(catalog_db: Session, theater_id: int) -> Optional[Theater]:
+        theater = catalog_db.query(Theater).filter(Theater.id == theater_id).first()
+        if not theater:
+            return None
+        theater.is_active = not theater.is_active
+        catalog_db.commit()
+        catalog_db.refresh(theater)
+        return theater
+
     # ── Purchases (cinema_booking) ─────────────────────────────────────────────
 
     @staticmethod

@@ -160,6 +160,19 @@ async def list_theaters(
     return [TheaterResponse.from_orm(t) for t in theaters]
 
 
+@router.patch("/theaters/{theater_id}/toggle", response_model=TheaterResponse)
+async def toggle_theater(
+    theater_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Activar / desactivar un teatro."""
+    theater = AdminService.toggle_theater_status(db, theater_id)
+    if not theater:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Teatro no encontrado")
+    return TheaterResponse.from_orm(theater)
+
+
 # ── Users (cinema_users) ───────────────────────────────────────────────────────
 
 @router.get("/users", response_model=List[UserResponse])

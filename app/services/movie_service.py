@@ -101,7 +101,7 @@ class MovieService:
             return None
 
         # Campos que afectan a cinema_booking y necesitan sincronización
-        _SYNC_FIELDS = {"price", "available_tickets", "max_capacity", "title", "genre", "duration", "rating"}
+        _SYNC_FIELDS = {"price", "available_tickets", "max_capacity", "title", "genre", "duration", "rating", "poster_url"}
         changed: dict = {}
 
         for field, value in data.model_dump(exclude_unset=True, exclude_none=True).items():
