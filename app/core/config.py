@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
 
     # cinema_catalog — películas, salas, funciones
-    DATABASE_URL: str
+    DATABASE_URL_CATALOG: str
     # cinema_users — perfiles de usuario (sin password_hash)
     DATABASE_URL_USERS: str
     # cinema_booking — compras, tickets, reportes de ventas

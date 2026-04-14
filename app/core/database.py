@@ -21,7 +21,7 @@ _ENGINE_KWARGS = dict(
 )
 
 # ── Catalog DB ─────────────────────────────────────────────────────────────────
-catalog_engine = create_engine(settings.DATABASE_URL, echo=settings.DEBUG, **_ENGINE_KWARGS)
+catalog_engine = create_engine(settings.DATABASE_URL_CATALOG, echo=settings.DEBUG, **_ENGINE_KWARGS)
 CatalogSession = sessionmaker(autocommit=False, autoflush=False, bind=catalog_engine)
 
 
