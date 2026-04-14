@@ -16,7 +16,7 @@ from app.schemas.admin import (
     TheaterCreate, TheaterResponse,
     CreateShowtimesRequest, ShowtimeResponse,
     UserResponse,
-    PurchaseResponse, SalesReport,
+    PurchaseResponse, SalesReport, MovieSalesReport, DateSalesReport,
     CloudinarySignRequest, CloudinarySignResponse,
 )
 from app.services.movie_service import MovieService
@@ -258,3 +258,20 @@ async def sales_report(
     _: User = Depends(get_current_admin),
 ):
     return AdminService.get_sales_report(booking_db)
+
+
+@router.get("/reports/by-movie", response_model=MovieSalesReport)
+async def report_by_movie(
+    booking_db: Session = Depends(get_booking_db),
+    _: User = Depends(get_current_admin),
+):
+    return AdminService.get_report_by_movie(booking_db)
+
+
+@router.get("/reports/by-date", response_model=DateSalesReport)
+async def report_by_date(
+    period: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
+    booking_db: Session = Depends(get_booking_db),
+    _: User = Depends(get_current_admin),
+):
+    return AdminService.get_report_by_date(booking_db, period)

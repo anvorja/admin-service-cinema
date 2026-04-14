@@ -237,6 +237,37 @@ class SalesReport(BaseModel):
     total_revenue: float
     total_tickets_sold: int
     average_purchase_amount: float
+    total_refunds: int
+    total_refunded_amount: float
+    total_cancelled: int
+    currency: str
+
+
+class MovieSalesItem(BaseModel):
+    movie_id: int
+    movie_title: str
+    purchases_count: int
+    tickets_sold: int
+    revenue: float
+    refunded_amount: float
+    net_revenue: float
+
+
+class MovieSalesReport(BaseModel):
+    items: List[MovieSalesItem]
+    currency: str
+
+
+class DateSalesItem(BaseModel):
+    period: str
+    purchases_count: int
+    tickets_sold: int
+    revenue: float
+
+
+class DateSalesReport(BaseModel):
+    items: List[DateSalesItem]
+    period_type: str
     currency: str
 
 

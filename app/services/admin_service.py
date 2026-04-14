@@ -7,10 +7,11 @@
 #
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, case
 
 from app.models.user import User
 from app.models.purchase import Purchase, PurchaseStatus   # BookingBase — cinema_booking
+from app.models.booking_refs import BookingMovieRef
 from app.models.theater import Theater                     # CatalogBase — cinema_catalog
 
 
@@ -138,6 +139,18 @@ class AdminService:
             Purchase.status == PurchaseStatus.CONFIRMED
         ).scalar() or 0
 
+        total_refunds = booking_db.query(Purchase).filter(
+            Purchase.status == PurchaseStatus.REFUNDED
+        ).count()
+
+        total_refunded_amount = booking_db.query(func.sum(Purchase.total_amount)).filter(
+            Purchase.status == PurchaseStatus.REFUNDED
+        ).scalar() or 0
+
+        total_cancelled = booking_db.query(Purchase).filter(
+            Purchase.status == PurchaseStatus.CANCELLED
+        ).count()
+
         avg = total_revenue / total_purchases if total_purchases > 0 else 0
 
         return {
@@ -145,5 +158,75 @@ class AdminService:
             "total_revenue": float(total_revenue),
             "total_tickets_sold": int(total_tickets),
             "average_purchase_amount": round(avg, 2),
+            "total_refunds": total_refunds,
+            "total_refunded_amount": float(total_refunded_amount),
+            "total_cancelled": total_cancelled,
             "currency": "COP",
         }
+
+    @staticmethod
+    def get_report_by_movie(booking_db: Session) -> Dict[str, Any]:
+        rows = (
+            booking_db.query(
+                BookingMovieRef.id.label("movie_id"),
+                BookingMovieRef.title.label("movie_title"),
+                func.count(Purchase.id).label("purchases_count"),
+                func.sum(Purchase.quantity).label("tickets_sold"),
+                func.sum(
+                    case((Purchase.status == PurchaseStatus.CONFIRMED, Purchase.total_amount), else_=0)
+                ).label("revenue"),
+                func.sum(
+                    case((Purchase.status == PurchaseStatus.REFUNDED, Purchase.total_amount), else_=0)
+                ).label("refunded_amount"),
+            )
+            .join(BookingMovieRef, Purchase.movie_id == BookingMovieRef.id)
+            .filter(Purchase.status.in_([PurchaseStatus.CONFIRMED, PurchaseStatus.REFUNDED]))
+            .group_by(BookingMovieRef.id, BookingMovieRef.title)
+            .order_by(
+                func.sum(
+                    case((Purchase.status == PurchaseStatus.CONFIRMED, Purchase.total_amount), else_=0)
+                ).desc()
+            )
+            .all()
+        )
+        items = []
+        for r in rows:
+            revenue = float(r.revenue or 0)
+            refunded = float(r.refunded_amount or 0)
+            items.append({
+                "movie_id": r.movie_id,
+                "movie_title": r.movie_title,
+                "purchases_count": r.purchases_count or 0,
+                "tickets_sold": int(r.tickets_sold or 0),
+                "revenue": revenue,
+                "refunded_amount": refunded,
+                "net_revenue": revenue - refunded,
+            })
+        return {"items": items, "currency": "COP"}
+
+    @staticmethod
+    def get_report_by_date(booking_db: Session, period: str = "daily") -> Dict[str, Any]:
+        trunc_map = {"daily": "day", "weekly": "week", "monthly": "month"}
+        trunc = trunc_map.get(period, "day")
+
+        rows = (
+            booking_db.query(
+                func.date_trunc(trunc, Purchase.created_at).label("period"),
+                func.count(Purchase.id).label("purchases_count"),
+                func.sum(Purchase.quantity).label("tickets_sold"),
+                func.sum(Purchase.total_amount).label("revenue"),
+            )
+            .filter(Purchase.status == PurchaseStatus.CONFIRMED)
+            .group_by(func.date_trunc(trunc, Purchase.created_at))
+            .order_by(func.date_trunc(trunc, Purchase.created_at))
+            .all()
+        )
+        items = []
+        for r in rows:
+            items.append({
+                "period": r.period.isoformat() if r.period else "",
+                "purchases_count": r.purchases_count or 0,
+                "tickets_sold": int(r.tickets_sold or 0),
+                "revenue": float(r.revenue or 0),
+            })
+        return {"items": items, "period_type": period, "currency": "COP"}
