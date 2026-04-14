@@ -14,7 +14,7 @@ from app.core.cache import cache
 class MovieService:
 
     @staticmethod
-    def create_movie(db: Session, data: MovieCreate) -> Movie:
+    async def create_movie(db: Session, data: MovieCreate) -> Movie:
         existing = db.query(Movie).filter(Movie.title.ilike(data.title.strip())).first()
         if existing:
             raise HTTPException(
@@ -51,6 +51,25 @@ class MovieService:
         # Reload with relations so .theaters property works
         db.refresh(movie)
         cache.delete_pattern("home:*")
+
+        # Publicar movie.created para que booking-service inserte la película en su tabla local
+        try:
+            from app.kafka.producer import publish_event
+            await publish_event("movie.created", {
+                "movie_id":          movie.id,
+                "title":             movie.title,
+                "genre":             movie.genre,
+                "duration":          movie.duration,
+                "rating":            movie.rating,
+                "price":             float(movie.price),
+                "available_tickets": movie.available_tickets,
+                "max_capacity":      movie.max_capacity,
+                "poster_url":        movie.poster_url,
+            })
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("No se pudo publicar movie.created: %s", e)
+
         return movie
 
     @staticmethod
@@ -133,14 +152,26 @@ class MovieService:
         return movie
 
     @staticmethod
-    def toggle_movie_status(db: Session, movie_id: int) -> Optional[Movie]:
+    async def toggle_movie_status(db: Session, movie_id: int) -> Optional[Movie]:
         movie = db.query(Movie).filter(Movie.id == movie_id).first()
         if not movie:
             return None
+        was_active = movie.is_active
         movie.is_active = not movie.is_active
         db.commit()
         db.refresh(movie)
         cache.delete_pattern("home:*")
+
+        # Publicar movie.deactivated cuando se desactiva, para que booking-service
+        # marque la película como inactiva en su tabla local y bloquee nuevas compras.
+        if was_active and not movie.is_active:
+            try:
+                from app.kafka.producer import publish_event
+                await publish_event("movie.deactivated", {"movie_id": movie_id})
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("No se pudo publicar movie.deactivated: %s", e)
+
         return movie
 
     @staticmethod

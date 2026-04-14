@@ -61,7 +61,7 @@ async def create_movie(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    movie = MovieService.create_movie(db, data)
+    movie = await MovieService.create_movie(db, data)
     return MovieResponse.from_orm(movie)
 
 
@@ -110,7 +110,7 @@ async def toggle_movie(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    movie = MovieService.toggle_movie_status(db, movie_id)
+    movie = await MovieService.toggle_movie_status(db, movie_id)
     if not movie:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Película no encontrada")
     return MovieResponse.from_orm(movie)
