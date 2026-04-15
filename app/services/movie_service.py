@@ -181,6 +181,8 @@ class MovieService:
         start_date: date,
         days_count: int = 7,
         theater_ids: Optional[List[int]] = None,
+        hall_number: Optional[int] = None,
+        hall_template_id: Optional[int] = None,
     ) -> List[MovieShowtime]:
         movie = db.query(Movie).filter(Movie.id == movie_id).first()
         if not movie:
@@ -215,6 +217,8 @@ class MovieService:
                             show_date=show_date,
                             show_time=s["time"],
                             format=s["format"],
+                            hall_number=hall_number,
+                            hall_template_id=hall_template_id,
                         )
                         db.add(showtime)
                         created.append(showtime)

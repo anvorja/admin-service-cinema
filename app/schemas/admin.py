@@ -141,6 +141,8 @@ class CreateShowtimesRequest(BaseModel):
     start_date: date
     days_count: int = Field(default=7, ge=1, le=30)
     theater_ids: Optional[List[int]] = None
+    hall_number: Optional[int] = Field(default=None, ge=1, description="Número de sala física (1, 2, 3…)")
+    hall_template_id: Optional[int] = Field(default=None, description="ID del layout de asientos a usar")
 
 
 class ShowtimeResponse(BaseModel):
@@ -151,6 +153,8 @@ class ShowtimeResponse(BaseModel):
     capacity: int
     available_tickets: int
     theater_name: str
+    hall_number: Optional[int] = None
+    hall_template_id: Optional[int] = None
 
     @classmethod
     def from_orm(cls, s):
@@ -158,6 +162,7 @@ class ShowtimeResponse(BaseModel):
             id=s.id, show_date=s.show_date, show_time=s.show_time,
             format=s.format.value, capacity=s.capacity,
             available_tickets=s.available_tickets, theater_name=s.theater.name,
+            hall_number=s.hall_number, hall_template_id=s.hall_template_id,
         )
 
 

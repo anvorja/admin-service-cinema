@@ -124,7 +124,8 @@ async def create_showtimes(
     _: User = Depends(get_current_admin),
 ):
     showtimes = MovieService.create_showtimes(
-        db, movie_id, data.start_date, data.days_count, data.theater_ids
+        db, movie_id, data.start_date, data.days_count, data.theater_ids,
+        hall_number=data.hall_number, hall_template_id=data.hall_template_id,
     )
     return [ShowtimeResponse.from_orm(s) for s in showtimes]
 

@@ -1,8 +1,8 @@
 # app/models/theater.py
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 from datetime import datetime, date
 import enum
-from sqlalchemy import String, Integer, ForeignKey, Index, Date, Enum
+from sqlalchemy import String, Integer, ForeignKey, Index, Date, Enum, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import BaseModel
@@ -57,12 +57,20 @@ class MovieShowtime(BaseModel):
     format: Mapped[ShowtimeFormat] = mapped_column(Enum(ShowtimeFormat), nullable=False)
     capacity: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     available_tickets: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    hall_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    hall_template_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     movie: Mapped["Movie"] = relationship(back_populates="showtimes")
     theater: Mapped["Theater"] = relationship(back_populates="showtimes")
 
     __table_args__ = (
         Index("ix_showtime_unique", "movie_id", "theater_id", "show_date", "show_time", "format", unique=True),
+        Index(
+            "ix_showtime_hall_unique",
+            "theater_id", "hall_number", "show_date", "show_time",
+            unique=True,
+            postgresql_where=text("hall_number IS NOT NULL"),
+        ),
     )
 
     @property
