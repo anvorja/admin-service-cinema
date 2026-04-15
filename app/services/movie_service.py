@@ -227,4 +227,3 @@ class MovieService:
         for st in created:
             db.refresh(st)
         return created
-
