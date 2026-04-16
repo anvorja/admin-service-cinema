@@ -206,12 +206,27 @@ class TicketResponse(BaseModel):
         )
 
 
+class PurchaseUserInfo(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    email: str
+
+
+class PurchaseMovieInfo(BaseModel):
+    id: int
+    title: str
+    genre: str
+
+
 class PurchaseResponse(BaseModel):
     id: int
     user_id: int
     movie_id: int
     movie_title: str
     user_full_name: str
+    user: PurchaseUserInfo
+    movie: PurchaseMovieInfo
     quantity: int
     total_amount: float
     status: str
@@ -225,6 +240,17 @@ class PurchaseResponse(BaseModel):
         return cls(
             id=p.id, user_id=p.user_id, movie_id=p.movie_id,
             movie_title=p.movie.title, user_full_name=p.user.full_name,
+            user=PurchaseUserInfo(
+                id=p.user.id,
+                first_name=p.user.first_name,
+                last_name=p.user.last_name,
+                email=p.user.email,
+            ),
+            movie=PurchaseMovieInfo(
+                id=p.movie.id,
+                title=p.movie.title,
+                genre=p.movie.genre,
+            ),
             quantity=p.quantity, total_amount=p.total_amount,
             status=p.status.value, is_confirmed=p.is_confirmed,
             created_at=p.created_at,
