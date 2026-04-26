@@ -227,3 +227,14 @@ class MovieService:
         for st in created:
             db.refresh(st)
         return created
+
+    @staticmethod
+    def delete_showtime(db: Session, movie_id: int, showtime_id: int) -> None:
+        showtime = db.query(MovieShowtime).filter(
+            MovieShowtime.id == showtime_id,
+            MovieShowtime.movie_id == movie_id,
+        ).first()
+        if not showtime:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Showtime no encontrado")
+        db.delete(showtime)
+        db.commit()

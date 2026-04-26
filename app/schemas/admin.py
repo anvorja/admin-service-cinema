@@ -139,7 +139,7 @@ class TheaterResponse(BaseModel):
 
 class CreateShowtimesRequest(BaseModel):
     start_date: date
-    days_count: int = Field(default=7, ge=1, le=30)
+    days_count: int = Field(default=30, ge=1, le=120)
     theater_ids: Optional[List[int]] = None
     hall_number: Optional[int] = Field(default=None, ge=1, description="Número de sala física (1, 2, 3…)")
     hall_template_id: Optional[int] = Field(default=None, description="ID del layout de asientos a usar")

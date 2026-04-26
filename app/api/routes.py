@@ -130,6 +130,16 @@ async def create_showtimes(
     return [ShowtimeResponse.from_orm(s) for s in showtimes]
 
 
+@router.delete("/movies/{movie_id}/showtimes/{showtime_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_showtime(
+    movie_id: int,
+    showtime_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    MovieService.delete_showtime(db, movie_id, showtime_id)
+
+
 # ── Theaters (cinema_catalog) ──────────────────────────────────────────────────
 
 @router.post("/theaters", response_model=TheaterResponse, status_code=status.HTTP_201_CREATED)
