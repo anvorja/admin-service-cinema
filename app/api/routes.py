@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import get_db, get_booking_db
+from app.core.database import get_db
 from app.api.dependencies import get_current_admin
 from app.models.user import User
 from app.models.theater import Theater
@@ -220,7 +220,7 @@ async def toggle_user(
     return UserResponse.from_orm(user)
 
 
-# ── Purchases (cinema_booking) ─────────────────────────────────────────────────
+# ── Purchases y reportes (HTTP a booking-service) ───────────────────────────────
 
 @router.get("/purchases", response_model=List[PurchaseResponse])
 async def list_purchases(
@@ -229,11 +229,10 @@ async def list_purchases(
     movie_id: Optional[int] = Query(None),
     user_id: Optional[int] = Query(None),
     purchase_status: Optional[str] = Query(None, alias="status"),
-    booking_db: Session = Depends(get_booking_db),
     _: User = Depends(get_current_admin),
 ):
-    purchases = AdminService.get_purchases(booking_db, skip, limit, movie_id, user_id, purchase_status)
-    return [PurchaseResponse.from_orm(p) for p in purchases]
+    purchases = await AdminService.get_purchases(skip, limit, movie_id, user_id, purchase_status)
+    return [PurchaseResponse(**p) for p in purchases]
 
 
 @router.get("/purchases/movie/{movie_id}", response_model=List[PurchaseResponse])
@@ -241,11 +240,10 @@ async def purchases_by_movie(
     movie_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    booking_db: Session = Depends(get_booking_db),
     _: User = Depends(get_current_admin),
 ):
-    purchases = AdminService.get_purchases(booking_db, skip, limit, movie_id=movie_id)
-    return [PurchaseResponse.from_orm(p) for p in purchases]
+    purchases = await AdminService.get_purchases(skip, limit, movie_id=movie_id)
+    return [PurchaseResponse(**p) for p in purchases]
 
 
 @router.get("/purchases/user/{user_id}", response_model=List[PurchaseResponse])
@@ -253,33 +251,25 @@ async def purchases_by_user(
     user_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    booking_db: Session = Depends(get_booking_db),
     _: User = Depends(get_current_admin),
 ):
-    purchases = AdminService.get_purchases(booking_db, skip, limit, user_id=user_id)
-    return [PurchaseResponse.from_orm(p) for p in purchases]
+    purchases = await AdminService.get_purchases(skip, limit, user_id=user_id)
+    return [PurchaseResponse(**p) for p in purchases]
 
 
 @router.get("/reports/sales", response_model=SalesReport)
-async def sales_report(
-    booking_db: Session = Depends(get_booking_db),
-    _: User = Depends(get_current_admin),
-):
-    return AdminService.get_sales_report(booking_db)
+async def sales_report(_: User = Depends(get_current_admin)):
+    return await AdminService.get_sales_report()
 
 
 @router.get("/reports/by-movie", response_model=MovieSalesReport)
-async def report_by_movie(
-    booking_db: Session = Depends(get_booking_db),
-    _: User = Depends(get_current_admin),
-):
-    return AdminService.get_report_by_movie(booking_db)
+async def report_by_movie(_: User = Depends(get_current_admin)):
+    return await AdminService.get_report_by_movie()
 
 
 @router.get("/reports/by-date", response_model=DateSalesReport)
 async def report_by_date(
     period: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
-    booking_db: Session = Depends(get_booking_db),
     _: User = Depends(get_current_admin),
 ):
-    return AdminService.get_report_by_date(booking_db, period)
+    return await AdminService.get_report_by_date(period)

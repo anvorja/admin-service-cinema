@@ -6,11 +6,11 @@ Panel administrativo del sistema: gestión de películas, teatros, usuarios y re
 
 No tiene base de datos propia. Gestiona el ciclo de vida de películas y funciones (`showtimes`), activa/desactiva teatros y usuarios, expone reportes de ventas, y firma subidas de imágenes a Cloudinary para el frontend admin.
 
-Hasta 2026-09-19 resolvía todo (incluyendo auth/autorización del propio panel) conectándose directo a `cinema_catalog`, `cinema_users` y `cinema_booking` con sus propios modelos SQLAlchemy. Desde esa fecha, **`cinema_users` ya no tiene conexión directa** — se resuelve por HTTP interno a `user-service` (dueño de esa base), con una caché corta en Redis para no llamar a `user-service` en cada request del panel. `cinema_catalog` y `cinema_booking` siguen siendo acceso directo por ahora (casos 1 y 3, pendientes — ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio").
+Hasta 2026-09-19 resolvía todo (incluyendo auth/autorización del propio panel) conectándose directo a `cinema_catalog`, `cinema_users` y `cinema_booking` con sus propios modelos SQLAlchemy. Desde esa fecha, **`cinema_users` y `cinema_booking` ya no tienen conexión directa** — se resuelven por HTTP interno a `user-service` y `booking-service` respectivamente (dueños reales de cada base), con una caché corta en Redis para el perfil de usuario. Solo `cinema_catalog` sigue siendo acceso directo (caso 1, pendiente — ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio").
 
 ## Stack
 
-FastAPI + SQLAlchemy 2.0 (dos engines: `cinema_catalog`, `cinema_booking`) + `httpx` (llamadas a `user-service`) + Redis (blacklist de tokens + caché de perfiles) + aiokafka. Firma de Cloudinary manual (HMAC-SHA1 sobre los parámetros, sin SDK — ver `app/api/routes.py::sign_cloudinary_upload`). Puerto `8007`.
+FastAPI + SQLAlchemy 2.0 (un engine propio: `cinema_catalog`) + `httpx` (llamadas a `user-service` y `booking-service`) + Redis (blacklist de tokens + caché de perfiles) + aiokafka. Firma de Cloudinary manual (HMAC-SHA1 sobre los parámetros, sin SDK — ver `app/api/routes.py::sign_cloudinary_upload`). Puerto `8007`.
 
 ## API
 
@@ -32,12 +32,12 @@ Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin
 | GET | `/users` | Lista usuarios (vía HTTP a `user-service`) |
 | GET | `/users/{id}` | Detalle de usuario (vía HTTP a `user-service`) |
 | PATCH | `/users/{id}/toggle` | Activa/desactiva usuario — la aplica `user-service` (publica `user.deactivated` solo al desactivar); aquí solo se valida que un admin no pueda desactivarse a sí mismo |
-| GET | `/purchases` | Lista compras |
-| GET | `/purchases/movie/{movie_id}` | Compras de una película |
-| GET | `/purchases/user/{user_id}` | Compras de un usuario |
-| GET | `/reports/sales` | Reporte general de ventas |
-| GET | `/reports/by-movie` | Ventas agrupadas por película |
-| GET | `/reports/by-date` | Ventas agrupadas por fecha |
+| GET | `/purchases` | Lista compras (vía HTTP a `booking-service`) |
+| GET | `/purchases/movie/{movie_id}` | Compras de una película (vía HTTP a `booking-service`) |
+| GET | `/purchases/user/{user_id}` | Compras de un usuario (vía HTTP a `booking-service`) |
+| GET | `/reports/sales` | Reporte general de ventas (vía HTTP a `booking-service`) |
+| GET | `/reports/by-movie` | Ventas agrupadas por película (vía HTTP a `booking-service`) |
+| GET | `/reports/by-date` | Ventas agrupadas por fecha (vía HTTP a `booking-service`) |
 
 ## Eventos Kafka
 
@@ -54,9 +54,9 @@ Solo publica — no consume nada. Ver el contrato completo (payload, semántica)
 | Variable | Para qué |
 |---|---|
 | `DATABASE_URL_CATALOG` | Conexión a `cinema_catalog` (películas, teatros, funciones) |
-| `DATABASE_URL_BOOKING` | Conexión a `cinema_booking` (compras, para reportes) |
 | `USER_SERVICE_URL` | URL de `user-service` — resuelve auth/autorización del panel y el CRUD de usuarios (default local: `http://user-service:8008`) |
-| `INTERNAL_SERVICE_TOKEN` | Header `X-Internal-Token` en las llamadas a `user-service` — debe coincidir con el mismo valor allá |
+| `BOOKING_SERVICE_URL` | URL de `booking-service` — compras y reportes de ventas (default local: `http://booking-service:8004`) |
+| `INTERNAL_SERVICE_TOKEN` | Header `X-Internal-Token` en las llamadas a `user-service`/`booking-service` — debe coincidir con el mismo valor allá |
 | `JWT_SECRET` / `JWT_ALGORITHM` | Validar el token del admin — debe coincidir con `auth-service` |
 | `REDIS_URL` | Blacklist de tokens invalidados + caché corta (60s) de perfiles resueltos desde `user-service` |
 | `KAFKA_ENABLED` / `KAFKA_BOOTSTRAP_SERVERS` / `KAFKA_API_KEY` / `KAFKA_API_SECRET` | Publicación de eventos (Confluent Cloud) |
@@ -68,9 +68,9 @@ Qué variable va en cuál entorno: `../IMPLEMENTATION-GUIDE.md` Fase 4.4.
 ## Dependencias
 
 - **HTTP** → `user-service` (`/api/v1/users/internal/*`, protegido por `X-Internal-Token`): resuelve auth/autorización del panel (`get_current_admin`) y el CRUD de `/admin/users`. Desde 2026-09-19 — antes era una conexión directa a `cinema_users` (ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio", caso 2).
-- **Base de datos compartida** (pendiente de resolver — casos 1 y 3 de la misma decisión):
+- **HTTP** → `booking-service` (`/api/v1/purchases/internal/admin/*`, protegido por `X-Internal-Token`): `/purchases*` y `/reports/*`. Desde 2026-09-19 — antes era una conexión directa a `cinema_booking` (caso 3 de la misma decisión).
+- **Base de datos compartida** (pendiente de resolver — caso 1, el único que queda):
   - Comparte `cinema_catalog` con `catalog-service` (mismo esquema de películas/teatros).
-  - Comparte `cinema_booking` con `booking-service` (solo lectura para reportes).
 - Sus eventos Kafka de películas (`movie.*`) son la forma en que `catalog-service`/`booking-service` se enteran de cambios hechos aquí sin consultar `cinema_catalog` directamente — aunque hoy `catalog-service` no los consume todavía (ver `HALLAZGOS.md`).
 
 ## Correr en local

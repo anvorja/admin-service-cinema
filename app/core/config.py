@@ -10,16 +10,17 @@ class Settings(BaseSettings):
 
     # cinema_catalog — películas, salas, funciones
     DATABASE_URL_CATALOG: str
-    # cinema_booking — compras, tickets, reportes de ventas
-    DATABASE_URL_BOOKING: str
 
-    # user-service — dueño de cinema_users. Desde 2026-09-19 admin-service ya
-    # no conecta directo a esa base (ver ARCHITECTURE.md, "Aislamiento de
-    # base de datos por servicio", caso 2); resuelve auth/autorización y el
-    # panel de usuarios vía HTTP interno.
+    # user-service y booking-service son dueños de cinema_users y
+    # cinema_booking respectivamente. Desde 2026-09-19 admin-service ya no
+    # conecta directo a esas bases (ver ARCHITECTURE.md, "Aislamiento de
+    # base de datos por servicio", casos 2 y 3); resuelve todo vía HTTP
+    # interno. Solo conserva conexión propia a cinema_catalog (caso 1,
+    # pendiente).
     USER_SERVICE_URL: str = "http://user-service:8008"
-    # Secreto compartido para llamar a rutas /internal/* de user-service.
-    # Debe coincidir con INTERNAL_SERVICE_TOKEN en user-service-cinema.
+    BOOKING_SERVICE_URL: str = "http://booking-service:8004"
+    # Secreto compartido para llamar a rutas /internal/* de user-service y
+    # booking-service. Debe coincidir con INTERNAL_SERVICE_TOKEN allá.
     INTERNAL_SERVICE_TOKEN: str = ""
 
     JWT_SECRET: str
