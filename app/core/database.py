@@ -1,12 +1,15 @@
-# app/core/database.py — tres conexiones independientes para admin-service
+# app/core/database.py — dos conexiones independientes para admin-service
 #
 #  ┌─────────────────────┬──────────────────┬──────────────────────────────┐
 #  │ Session             │ DB               │ Tablas                       │
 #  ├─────────────────────┼──────────────────┼──────────────────────────────┤
 #  │ get_catalog_db      │ cinema_catalog   │ movies, theaters, showtimes  │
-#  │ get_users_db        │ cinema_users     │ users (sin password_hash)    │
 #  │ get_booking_db      │ cinema_booking   │ purchases, tickets           │
 #  └─────────────────────┴──────────────────┴──────────────────────────────┘
+#
+# cinema_users ya no tiene conexión propia aquí — desde 2026-09-19 se
+# resuelve por HTTP a user-service (ver ARCHITECTURE.md, "Aislamiento de
+# base de datos por servicio", caso 2).
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,8 +18,8 @@ from .config import settings
 _ENGINE_KWARGS = dict(
     pool_pre_ping=True,
     pool_recycle=300,
-    pool_size=2,       # 3 pools × 2 = 6 conexiones base (era 5 → 15)
-    max_overflow=3,    # 3 pools × 3 = 9 overflow máximo (era 10 → 30)
+    pool_size=3,       # 2 pools × 3 = 6 conexiones base
+    max_overflow=5,    # 2 pools × 5 = 10 overflow máximo
     pool_timeout=30,
 )
 
@@ -35,19 +38,6 @@ def get_catalog_db():
 
 # Alias para compatibilidad con rutas de películas/salas que usan get_db
 get_db = get_catalog_db
-
-# ── Users DB ───────────────────────────────────────────────────────────────────
-users_engine = create_engine(settings.DATABASE_URL_USERS, echo=settings.DEBUG, **_ENGINE_KWARGS)
-UsersSession = sessionmaker(autocommit=False, autoflush=False, bind=users_engine)
-
-
-def get_users_db():
-    db = UsersSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
 
 # ── Booking DB ─────────────────────────────────────────────────────────────────
 # Usa BookingBase (metadata separada) porque cinema_booking.movies tiene menos

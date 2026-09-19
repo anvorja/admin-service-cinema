@@ -4,15 +4,17 @@ Panel administrativo del sistema: gestión de películas, teatros, usuarios y re
 
 ## Responsabilidad
 
-No tiene base de datos propia. Es intencional: en vez de duplicar datos u orquestar por HTTP, se conecta directamente a las tres bases de datos que necesita gestionar o consultar —`cinema_catalog`, `cinema_users` y `cinema_booking`— y opera sobre ellas con sus propios modelos SQLAlchemy. Gestiona el ciclo de vida de películas y funciones (`showtimes`), activa/desactiva teatros y usuarios, expone reportes de ventas, y firma subidas de imágenes a Cloudinary para el frontend admin.
+No tiene base de datos propia. Gestiona el ciclo de vida de películas y funciones (`showtimes`), activa/desactiva teatros y usuarios, expone reportes de ventas, y firma subidas de imágenes a Cloudinary para el frontend admin.
+
+Hasta 2026-09-19 resolvía todo (incluyendo auth/autorización del propio panel) conectándose directo a `cinema_catalog`, `cinema_users` y `cinema_booking` con sus propios modelos SQLAlchemy. Desde esa fecha, **`cinema_users` ya no tiene conexión directa** — se resuelve por HTTP interno a `user-service` (dueño de esa base), con una caché corta en Redis para no llamar a `user-service` en cada request del panel. `cinema_catalog` y `cinema_booking` siguen siendo acceso directo por ahora (casos 1 y 3, pendientes — ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio").
 
 ## Stack
 
-FastAPI + SQLAlchemy 2.0 (tres engines, uno por base de datos) + Redis (blacklist de tokens) + aiokafka. Firma de Cloudinary manual (HMAC-SHA1 sobre los parámetros, sin SDK — ver `app/api/routes.py::sign_cloudinary_upload`). Puerto `8007`.
+FastAPI + SQLAlchemy 2.0 (dos engines: `cinema_catalog`, `cinema_booking`) + `httpx` (llamadas a `user-service`) + Redis (blacklist de tokens + caché de perfiles) + aiokafka. Firma de Cloudinary manual (HMAC-SHA1 sobre los parámetros, sin SDK — ver `app/api/routes.py::sign_cloudinary_upload`). Puerto `8007`.
 
 ## API
 
-Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin (`get_current_admin`, valida contra `cinema_users` y rechaza tokens en la blacklist de Redis).
+Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin (`get_current_admin`, que resuelve el usuario contra `user-service` — ver Dependencias — y rechaza tokens en la blacklist de Redis).
 
 | Método | Ruta | Qué hace |
 |---|---|---|
@@ -27,9 +29,9 @@ Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin
 | POST | `/theaters` | Crea sala/teatro |
 | GET | `/theaters` | Lista teatros |
 | PATCH | `/theaters/{id}/toggle` | Activa/desactiva teatro |
-| GET | `/users` | Lista usuarios |
-| GET | `/users/{id}` | Detalle de usuario |
-| PATCH | `/users/{id}/toggle` | Activa/desactiva usuario — publica `user.deactivated` solo al desactivar |
+| GET | `/users` | Lista usuarios (vía HTTP a `user-service`) |
+| GET | `/users/{id}` | Detalle de usuario (vía HTTP a `user-service`) |
+| PATCH | `/users/{id}/toggle` | Activa/desactiva usuario — la aplica `user-service` (publica `user.deactivated` solo al desactivar); aquí solo se valida que un admin no pueda desactivarse a sí mismo |
 | GET | `/purchases` | Lista compras |
 | GET | `/purchases/movie/{movie_id}` | Compras de una película |
 | GET | `/purchases/user/{user_id}` | Compras de un usuario |
@@ -39,24 +41,24 @@ Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin
 
 ## Eventos Kafka
 
-Solo publica — no consume nada. Ver el contrato completo (payload, semántica) en `../kafka-schemas-cinema/event_contracts_operativos.md`.
+Solo publica — no consume nada. Ver el contrato completo (payload, semántica) en `../kafka-schemas-cinema/event_contracts_operativos.md`. `user.deactivated` ya no lo publica este servicio — desde el caso 2 lo publica `user-service`, que es quien aplica el cambio.
 
 | Topic | Cuándo |
 |---|---|
 | `movie.created` | Al crear una película |
 | `movie.updated` | Al editar campos de una película |
 | `movie.deactivated` | Al desactivar una película (no al reactivar) |
-| `user.deactivated` | Al desactivar un usuario |
 
 ## Variables de entorno clave
 
 | Variable | Para qué |
 |---|---|
 | `DATABASE_URL_CATALOG` | Conexión a `cinema_catalog` (películas, teatros, funciones) |
-| `DATABASE_URL_USERS` | Conexión a `cinema_users` (perfiles, autenticación de admin) |
 | `DATABASE_URL_BOOKING` | Conexión a `cinema_booking` (compras, para reportes) |
+| `USER_SERVICE_URL` | URL de `user-service` — resuelve auth/autorización del panel y el CRUD de usuarios (default local: `http://user-service:8008`) |
+| `INTERNAL_SERVICE_TOKEN` | Header `X-Internal-Token` en las llamadas a `user-service` — debe coincidir con el mismo valor allá |
 | `JWT_SECRET` / `JWT_ALGORITHM` | Validar el token del admin — debe coincidir con `auth-service` |
-| `REDIS_URL` | Blacklist de tokens invalidados |
+| `REDIS_URL` | Blacklist de tokens invalidados + caché corta (60s) de perfiles resueltos desde `user-service` |
 | `KAFKA_ENABLED` / `KAFKA_BOOTSTRAP_SERVERS` / `KAFKA_API_KEY` / `KAFKA_API_SECRET` | Publicación de eventos (Confluent Cloud) |
 | `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` / `CLOUDINARY_UPLOAD_PRESET` | Firmar subidas de imágenes |
 | `BACKEND_CORS_ORIGINS` | Orígenes permitidos (acepta lista JSON o CSV) |
@@ -65,13 +67,11 @@ Qué variable va en cuál entorno: `../IMPLEMENTATION-GUIDE.md` Fase 4.4.
 
 ## Dependencias
 
-No tiene API interna hacia otros microservicios — su acoplamiento es a nivel de base de datos, no de red:
-
-- Comparte `cinema_catalog` con `catalog-service` (mismo esquema de películas/teatros).
-- Comparte `cinema_users` con `user-service` y `auth-service` (perfiles y autenticación).
-- Comparte `cinema_booking` con `booking-service` (solo lectura para reportes).
-
-Por eso sus eventos Kafka existen: son la forma en que `booking-service` (y otros) se enteran de cambios hechos aquí sin consultar estas bases directamente.
+- **HTTP** → `user-service` (`/api/v1/users/internal/*`, protegido por `X-Internal-Token`): resuelve auth/autorización del panel (`get_current_admin`) y el CRUD de `/admin/users`. Desde 2026-09-19 — antes era una conexión directa a `cinema_users` (ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio", caso 2).
+- **Base de datos compartida** (pendiente de resolver — casos 1 y 3 de la misma decisión):
+  - Comparte `cinema_catalog` con `catalog-service` (mismo esquema de películas/teatros).
+  - Comparte `cinema_booking` con `booking-service` (solo lectura para reportes).
+- Sus eventos Kafka de películas (`movie.*`) son la forma en que `catalog-service`/`booking-service` se enteran de cambios hechos aquí sin consultar `cinema_catalog` directamente — aunque hoy `catalog-service` no los consume todavía (ver `HALLAZGOS.md`).
 
 ## Correr en local
 

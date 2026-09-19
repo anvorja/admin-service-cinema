@@ -1,81 +1,90 @@
 # app/services/admin_service.py
 #
 # Cada método recibe la sesión de la DB que corresponde a su dominio:
-#   • users_db  → cinema_users   (perfiles, sin password_hash)
 #   • booking_db → cinema_booking (compras, tickets)
 #   • catalog_db → cinema_catalog (teatro — heredado del método get_theaters)
 #
+# Los métodos de usuarios ya NO reciben sesión de BD: cinema_users es de
+# user-service, se consulta por HTTP interno (ver ARCHITECTURE.md,
+# "Aislamiento de base de datos por servicio", caso 2).
+import logging
 from typing import List, Optional, Dict, Any
+
+import httpx
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_, case
 
+from app.core.config import settings
 from app.models.user import User
 from app.models.purchase import Purchase, PurchaseStatus   # BookingBase — cinema_booking
 from app.models.booking_refs import BookingMovieRef
 from app.models.theater import Theater                     # CatalogBase — cinema_catalog
 
+logger = logging.getLogger(__name__)
+
+_INTERNAL_HEADERS = {"X-Internal-Token": settings.INTERNAL_SERVICE_TOKEN}
+
 
 class AdminService:
 
-    # ── Users (cinema_users) ───────────────────────────────────────────────────
+    # ── Users (HTTP a user-service, dueño de cinema_users) ──────────────────────
 
     @staticmethod
-    def get_users(
-        users_db: Session,
+    async def get_users(
         skip: int = 0,
         limit: int = 20,
         include_inactive: bool = False,
         search: Optional[str] = None,
     ) -> List[User]:
-        q = users_db.query(User)
-        if not include_inactive:
-            q = q.filter(User.is_active == True)
+        params: Dict[str, Any] = {"skip": skip, "limit": limit, "include_inactive": include_inactive}
         if search:
-            term = f"%{search.strip()}%"
-            q = q.filter(
-                or_(
-                    User.email.ilike(term),
-                    User.first_name.ilike(term),
-                    User.last_name.ilike(term),
-                )
+            params["search"] = search
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.USER_SERVICE_URL}/api/v1/users/internal",
+                params=params,
+                headers=_INTERNAL_HEADERS,
             )
-        return q.offset(skip).limit(limit).all()
+        if resp.status_code != status.HTTP_200_OK:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Error al consultar usuarios")
+        return [User(**item) for item in resp.json()]
 
     @staticmethod
-    def get_user_by_id(users_db: Session, user_id: int) -> Optional[User]:
-        return users_db.query(User).filter(User.id == user_id).first()
-
-    @staticmethod
-    async def toggle_user_status(users_db: Session, user_id: int, admin_id: int) -> Optional[User]:
-        """
-        Activa / desactiva un usuario en cinema_users.
-        Si se desactiva, publica user.deactivated → auth-service invalida acceso en cinema_auth.
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-
-        user = users_db.query(User).filter(User.id == user_id).first()
-        if not user:
+    async def get_user_by_id(user_id: int) -> Optional[User]:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.USER_SERVICE_URL}/api/v1/users/internal/{user_id}",
+                headers=_INTERNAL_HEADERS,
+            )
+        if resp.status_code == status.HTTP_404_NOT_FOUND:
             return None
-        if user.id == admin_id:
-            from fastapi import HTTPException, status
+        if resp.status_code != status.HTTP_200_OK:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Error al consultar el usuario")
+        return User(**resp.json())
+
+    @staticmethod
+    async def toggle_user_status(user_id: int, admin_id: int) -> Optional[User]:
+        """
+        Activa / desactiva un usuario. user-service aplica el cambio en
+        cinema_users y publica user.deactivated si corresponde — este
+        servicio solo aplica la regla de negocio de que un admin no puede
+        desactivarse a sí mismo (la conoce porque conoce al admin autenticado).
+        """
+        if user_id == admin_id:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "No puedes deshabilitar tu propia cuenta"
             )
-        was_active = user.is_active
-        user.is_active = not user.is_active
-        users_db.commit()
-        users_db.refresh(user)
-
-        # Si se desactivó, notificar a auth-service vía Kafka
-        if was_active and not user.is_active:
-            try:
-                from app.kafka.producer import publish_event
-                await publish_event("user.deactivated", {"user_id": user_id})
-            except Exception as e:
-                logger.warning("Could not publish user.deactivated: %s", e)
-
-        return user
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.patch(
+                f"{settings.USER_SERVICE_URL}/api/v1/users/internal/{user_id}/toggle",
+                headers=_INTERNAL_HEADERS,
+            )
+        if resp.status_code == status.HTTP_404_NOT_FOUND:
+            return None
+        if resp.status_code != status.HTTP_200_OK:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Error al actualizar el usuario")
+        return User(**resp.json())
 
     # ── Theaters (cinema_catalog) ──────────────────────────────────────────────
 

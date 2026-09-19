@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import get_db, get_users_db, get_booking_db
+from app.core.database import get_db, get_booking_db
 from app.api.dependencies import get_current_admin
 from app.models.user import User
 from app.models.theater import Theater
@@ -192,20 +192,18 @@ async def list_users(
     limit: int = Query(20, ge=1, le=100),
     include_inactive: bool = Query(False),
     search: Optional[str] = Query(None),
-    users_db: Session = Depends(get_users_db),
     _: User = Depends(get_current_admin),
 ):
-    users = AdminService.get_users(users_db, skip, limit, include_inactive, search)
+    users = await AdminService.get_users(skip, limit, include_inactive, search)
     return [UserResponse.from_orm(u) for u in users]
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
-    users_db: Session = Depends(get_users_db),
     _: User = Depends(get_current_admin),
 ):
-    user = AdminService.get_user_by_id(users_db, user_id)
+    user = await AdminService.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Usuario no encontrado")
     return UserResponse.from_orm(user)
@@ -214,10 +212,9 @@ async def get_user(
 @router.patch("/users/{user_id}/toggle", response_model=UserResponse)
 async def toggle_user(
     user_id: int,
-    users_db: Session = Depends(get_users_db),
     current_admin: User = Depends(get_current_admin),
 ):
-    user = await AdminService.toggle_user_status(users_db, user_id, current_admin.id)
+    user = await AdminService.toggle_user_status(user_id, current_admin.id)
     if not user:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Usuario no encontrado")
     return UserResponse.from_orm(user)
