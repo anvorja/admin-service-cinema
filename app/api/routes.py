@@ -10,7 +10,6 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.api.dependencies import get_current_admin
 from app.models.user import User
-from app.models.theater import Theater
 from app.schemas.admin import (
     MovieCreate, MovieUpdate, MovieResponse,
     TheaterCreate, TheaterResponse,
@@ -123,7 +122,7 @@ async def create_showtimes(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    showtimes = MovieService.create_showtimes(
+    showtimes = await MovieService.create_showtimes(
         db, movie_id, data.start_date, data.days_count, data.theater_ids,
         hall_number=data.hall_number, hall_template_id=data.hall_template_id,
     )
@@ -137,10 +136,10 @@ async def delete_showtime(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    MovieService.delete_showtime(db, movie_id, showtime_id)
+    await MovieService.delete_showtime(db, movie_id, showtime_id)
 
 
-# ── Theaters (cinema_catalog) ──────────────────────────────────────────────────
+# ── Theaters (cinema_admin) ─────────────────────────────────────────────────────
 
 @router.post("/theaters", response_model=TheaterResponse, status_code=status.HTTP_201_CREATED)
 async def create_theater(
@@ -148,14 +147,7 @@ async def create_theater(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    existing = db.query(Theater).filter(Theater.name == data.name).first()
-    if existing:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Teatro '{data.name}' ya existe")
-
-    theater = Theater(name=data.name, location=data.location, description=data.description)
-    db.add(theater)
-    db.commit()
-    db.refresh(theater)
+    theater = await AdminService.create_theater(db, data.name, data.location, data.description)
     return TheaterResponse.from_orm(theater)
 
 
@@ -178,7 +170,7 @@ async def toggle_theater(
     _: User = Depends(get_current_admin),
 ):
     """Activar / desactivar un teatro."""
-    theater = AdminService.toggle_theater_status(db, theater_id)
+    theater = await AdminService.toggle_theater_status(db, theater_id)
     if not theater:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Teatro no encontrado")
     return TheaterResponse.from_orm(theater)

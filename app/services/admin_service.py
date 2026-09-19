@@ -1,11 +1,13 @@
 # app/services/admin_service.py
 #
-# • catalog_db → cinema_catalog (teatros — heredado del método get_theaters)
+# Los métodos de teatros reciben la sesión de cinema_admin (dueña de este
+# servicio) y publican theater.* para que catalog-service sincronice su
+# copia de lectura en cinema_catalog (ver ARCHITECTURE.md, "Aislamiento de
+# base de datos por servicio", caso 1).
 #
 # Los métodos de usuarios y de compras/reportes ya NO reciben sesión de BD:
 # cinema_users es de user-service y cinema_booking es de booking-service, se
-# consultan por HTTP interno (ver ARCHITECTURE.md, "Aislamiento de base de
-# datos por servicio", casos 2 y 3).
+# consultan por HTTP interno (casos 2 y 3 de la misma decisión).
 import logging
 from typing import List, Optional, Dict, Any
 
@@ -15,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.user import User
-from app.models.theater import Theater                     # CatalogBase — cinema_catalog
+from app.models.theater import Theater
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,31 @@ class AdminService:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Error al actualizar el usuario")
         return User(**resp.json())
 
-    # ── Theaters (cinema_catalog) ──────────────────────────────────────────────
+    # ── Theaters (cinema_admin — publica theater.* para catalog-service) ────────
+
+    @staticmethod
+    async def create_theater(db: Session, name: str, location: str, description: Optional[str]) -> Theater:
+        existing = db.query(Theater).filter(Theater.name == name).first()
+        if existing:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Teatro '{name}' ya existe")
+
+        theater = Theater(name=name, location=location, description=description)
+        db.add(theater)
+        db.commit()
+        db.refresh(theater)
+
+        try:
+            from app.kafka.producer import publish_event
+            await publish_event("theater.created", {
+                "theater_id": theater.id,
+                "name": theater.name,
+                "location": theater.location,
+                "description": theater.description,
+            }, key=str(theater.id))
+        except Exception as e:
+            logger.warning("No se pudo publicar theater.created: %s", e)
+
+        return theater
 
     @staticmethod
     def get_theaters(
@@ -97,13 +123,24 @@ class AdminService:
         return q.offset(skip).limit(limit).all()
 
     @staticmethod
-    def toggle_theater_status(catalog_db: Session, theater_id: int) -> Optional[Theater]:
+    async def toggle_theater_status(catalog_db: Session, theater_id: int) -> Optional[Theater]:
         theater = catalog_db.query(Theater).filter(Theater.id == theater_id).first()
         if not theater:
             return None
         theater.is_active = not theater.is_active
         catalog_db.commit()
         catalog_db.refresh(theater)
+
+        try:
+            from app.kafka.producer import publish_event
+            await publish_event(
+                "theater.toggled",
+                {"theater_id": theater.id, "is_active": theater.is_active},
+                key=str(theater.id),
+            )
+        except Exception as e:
+            logger.warning("No se pudo publicar theater.toggled: %s", e)
+
         return theater
 
     # ── Purchases y reportes (HTTP a booking-service, dueño de cinema_booking) ──

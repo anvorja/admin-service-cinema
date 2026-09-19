@@ -52,20 +52,37 @@ class MovieService:
         db.refresh(movie)
         cache.delete_pattern("home:*")
 
-        # Publicar movie.created para que booking-service inserte la película en su tabla local
+        # Publicar movie.created para que booking-service (copia mínima) y
+        # catalog-service (copia completa, para la ficha de la película)
+        # lo inserten en su base local. theater_ids va incluido para que
+        # catalog-service materialice theater_movies en el mismo evento.
+        # Ver ARCHITECTURE.md, "Aislamiento de base de datos por servicio",
+        # caso 1 — el payload es deliberadamente el Movie completo: antes
+        # solo alimentaba a booking-service (que usa un subconjunto), ahora
+        # también es la única fuente de verdad para el catálogo de catalog-service.
         try:
             from app.kafka.producer import publish_event
             await publish_event("movie.created", {
                 "movie_id":          movie.id,
                 "title":             movie.title,
+                "description":       movie.description,
                 "genre":             movie.genre,
                 "duration":          movie.duration,
                 "rating":            movie.rating,
                 "price":             float(movie.price),
+                "director":          movie.director,
+                "country":           movie.country,
+                "status":            movie.status.name,
+                "is_presale":        movie.is_presale,
+                "release_date":      movie.release_date.isoformat(),
                 "available_tickets": movie.available_tickets,
                 "max_capacity":      movie.max_capacity,
                 "poster_url":        movie.poster_url,
-            })
+                "backdrop_url":      movie.backdrop_url,
+                "detail_1_url":      movie.detail_1_url,
+                "detail_2_url":      movie.detail_2_url,
+                "theater_ids":       data.theater_ids or [],
+            }, key=str(movie.id))
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("No se pudo publicar movie.created: %s", e)
@@ -119,8 +136,16 @@ class MovieService:
         if not movie:
             return None
 
-        # Campos que afectan a cinema_booking y necesitan sincronización
-        _SYNC_FIELDS = {"price", "available_tickets", "max_capacity", "title", "genre", "duration", "rating", "poster_url"}
+        # Todos los campos propios de Movie (menos id/is_active/timestamps) —
+        # catalog-service necesita el objeto completo para la ficha de la
+        # película (descripción, imágenes, fecha de estreno, etc.), no solo
+        # el subconjunto mínimo que booking-service usa para validar compras.
+        _SYNC_FIELDS = {
+            "title", "description", "genre", "duration", "rating", "price",
+            "director", "country", "status", "is_presale", "release_date",
+            "max_capacity", "available_tickets",
+            "poster_url", "backdrop_url", "detail_1_url", "detail_2_url",
+        }
         changed: dict = {}
 
         for field, value in data.model_dump(exclude_unset=True, exclude_none=True).items():
@@ -134,7 +159,12 @@ class MovieService:
                 value = str(value)
             setattr(movie, field, value)
             if field in _SYNC_FIELDS:
-                changed[field] = value
+                # El enum nativo de Postgres (moviestatus) guarda el NOMBRE
+                # del miembro ("IN_THEATERS"), no su .value ("in_theaters") —
+                # a diferencia de la columna ORM de acá, que SQLAlchemy sabe
+                # convertir sola. El consumer de catalog-service hace SQL
+                # crudo, así que hay que mandarle el nombre explícitamente.
+                changed[field] = MovieStatus(value).name if field == "status" and value else value
 
         db.commit()
         db.refresh(movie)
@@ -144,7 +174,7 @@ class MovieService:
         if changed:
             try:
                 from app.kafka.producer import publish_event
-                await publish_event("movie.updated", {"movie_id": movie_id, **changed})
+                await publish_event("movie.updated", {"movie_id": movie_id, **changed}, key=str(movie_id))
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning("No se pudo publicar movie.updated: %s", e)
@@ -167,7 +197,7 @@ class MovieService:
         if was_active and not movie.is_active:
             try:
                 from app.kafka.producer import publish_event
-                await publish_event("movie.deactivated", {"movie_id": movie_id})
+                await publish_event("movie.deactivated", {"movie_id": movie_id}, key=str(movie_id))
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning("No se pudo publicar movie.deactivated: %s", e)
@@ -175,7 +205,7 @@ class MovieService:
         return movie
 
     @staticmethod
-    def create_showtimes(
+    async def create_showtimes(
         db: Session,
         movie_id: int,
         start_date: date,
@@ -226,10 +256,32 @@ class MovieService:
         db.commit()
         for st in created:
             db.refresh(st)
+
+        if created:
+            from app.kafka.producer import publish_event
+            import logging
+            logger = logging.getLogger(__name__)
+            for st in created:
+                try:
+                    await publish_event("showtime.created", {
+                        "showtime_id": st.id,
+                        "movie_id":    st.movie_id,
+                        "theater_id":  st.theater_id,
+                        "show_date":   st.show_date.isoformat(),
+                        "show_time":   st.show_time,
+                        "format":      st.format.name,  # Postgres guarda el nombre, no .value — ver update_movie
+                        "capacity":    st.capacity,
+                        "available_tickets": st.available_tickets,
+                        "hall_number": st.hall_number,
+                        "hall_template_id": st.hall_template_id,
+                    }, key=str(st.movie_id))
+                except Exception as e:
+                    logger.warning("No se pudo publicar showtime.created (id=%s): %s", st.id, e)
+
         return created
 
     @staticmethod
-    def delete_showtime(db: Session, movie_id: int, showtime_id: int) -> None:
+    async def delete_showtime(db: Session, movie_id: int, showtime_id: int) -> None:
         showtime = db.query(MovieShowtime).filter(
             MovieShowtime.id == showtime_id,
             MovieShowtime.movie_id == movie_id,
@@ -238,3 +290,13 @@ class MovieService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Showtime no encontrado")
         db.delete(showtime)
         db.commit()
+
+        try:
+            from app.kafka.producer import publish_event
+            await publish_event("showtime.deleted", {
+                "showtime_id": showtime_id,
+                "movie_id": movie_id,
+            }, key=str(movie_id))
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("No se pudo publicar showtime.deleted: %s", e)

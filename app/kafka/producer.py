@@ -45,13 +45,24 @@ async def stop_producer() -> None:
         _producer = None
 
 
-async def publish_event(topic: str, payload: dict[str, Any]) -> None:
+async def publish_event(topic: str, payload: dict[str, Any], key: str | None = None) -> None:
+    """
+    `key` ancla el mensaje a una partición fija (mismo key = misma partición
+    = orden garantizado entre mensajes de esa entidad). Sin key, Kafka
+    reparte round-robin y dos eventos de la misma entidad (p.ej.
+    movie.created y movie.updated del mismo movie_id) podrían procesarse
+    fuera de orden en el consumer. Úsalo con el id de la entidad
+    (movie_id, theater_id, showtime_id) en cualquier evento donde el orden
+    de aplicación importe.
+    """
     if _producer is None:
         logger.debug("Kafka unavailable — '%s' not published", topic)
         return
     try:
-        await _producer.send_and_wait(topic, value=payload)
-        logger.info("Event published | topic=%s", topic)
+        await _producer.send_and_wait(
+            topic, value=payload, key=key.encode("utf-8") if key else None
+        )
+        logger.info("Event published | topic=%s key=%s", topic, key)
     except KafkaConnectionError as e:
         logger.error("Connection error publishing '%s': %s", topic, e)
     except Exception as e:

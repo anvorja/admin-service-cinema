@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.database import catalog_engine
+from app.core.database import admin_engine, init_schema
 from app.core.cache import cache
 from app.api.routes import router
 
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     from app.kafka.producer import start_producer, stop_producer
     logger.info("Admin Service starting...")
+    init_schema()
     await start_producer()
     yield
     await stop_producer()
@@ -68,7 +69,7 @@ app.include_router(router)
 @app.get("/health", tags=["Health"])
 async def health_check():
     try:
-        with Session(catalog_engine) as db:
+        with Session(admin_engine) as db:
             db.execute(text("SELECT 1"))
         db_status = "connected"
     except Exception as err:

@@ -4,13 +4,15 @@ Panel administrativo del sistema: gestión de películas, teatros, usuarios y re
 
 ## Responsabilidad
 
-No tiene base de datos propia. Gestiona el ciclo de vida de películas y funciones (`showtimes`), activa/desactiva teatros y usuarios, expone reportes de ventas, y firma subidas de imágenes a Cloudinary para el frontend admin.
+Dueño exclusivo de `cinema_admin` (`movies`, `theaters`, `theater_movies`, `movie_showtimes`). Gestiona el ciclo de vida de películas y funciones (`showtimes`), activa/desactiva teatros y usuarios, expone reportes de ventas, y firma subidas de imágenes a Cloudinary para el frontend admin.
 
-Hasta 2026-09-19 resolvía todo (incluyendo auth/autorización del propio panel) conectándose directo a `cinema_catalog`, `cinema_users` y `cinema_booking` con sus propios modelos SQLAlchemy. Desde esa fecha, **`cinema_users` y `cinema_booking` ya no tienen conexión directa** — se resuelven por HTTP interno a `user-service` y `booking-service` respectivamente (dueños reales de cada base), con una caché corta en Redis para el perfil de usuario. Solo `cinema_catalog` sigue siendo acceso directo (caso 1, pendiente — ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio").
+Hasta 2026-09-19 resolvía todo (incluyendo auth/autorización del propio panel) conectándose directo a `cinema_catalog`, `cinema_users` y `cinema_booking` — las tres compartidas con otros servicios, con sus propios modelos SQLAlchemy. Desde esa fecha, **ninguna de las tres tiene conexión directa**: `cinema_users` y `cinema_booking` se resuelven por HTTP interno a `user-service`/`booking-service`, y `cinema_catalog` se reemplazó por `cinema_admin` — una base propia, con el mismo esquema de siempre, que `catalog-service` sincroniza a su copia de lectura vía Kafka (`movie.*`/`theater.*`/`showtime.*`). Ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio", casos 1-3.
 
 ## Stack
 
-FastAPI + SQLAlchemy 2.0 (un engine propio: `cinema_catalog`) + `httpx` (llamadas a `user-service` y `booking-service`) + Redis (blacklist de tokens + caché de perfiles) + aiokafka. Firma de Cloudinary manual (HMAC-SHA1 sobre los parámetros, sin SDK — ver `app/api/routes.py::sign_cloudinary_upload`). Puerto `8007`.
+FastAPI + SQLAlchemy 2.0 (un engine propio: `cinema_admin`) + `httpx` (llamadas a `user-service` y `booking-service`) + Redis (blacklist de tokens + caché de perfiles) + aiokafka (publica `movie.*`/`theater.*`/`showtime.*`, ver Eventos Kafka). Firma de Cloudinary manual (HMAC-SHA1 sobre los parámetros, sin SDK — ver `app/api/routes.py::sign_cloudinary_upload`). Puerto `8007`.
+
+El esquema de `cinema_admin` se crea con `Base.metadata.create_all` al arrancar (`app/core/database.py::init_schema`) — este servicio nunca lo había necesitado antes porque compartía el esquema ya creado por `catalog-service`.
 
 ## API
 
@@ -19,16 +21,16 @@ Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin
 | Método | Ruta | Qué hace |
 |---|---|---|
 | POST | `/cloudinary/sign` | Firma una subida directa a Cloudinary (poster de película) |
-| POST | `/movies` | Crea película — publica `movie.created` |
+| POST | `/movies` | Crea película — publica `movie.created` (payload completo + `theater_ids`) |
 | GET | `/movies` | Lista películas |
 | GET | `/movies/{id}` | Detalle de película |
-| PUT | `/movies/{id}` | Actualiza película — publica `movie.updated` |
+| PUT | `/movies/{id}` | Actualiza película — publica `movie.updated` (todos los campos que cambiaron) |
 | PATCH | `/movies/{id}/toggle` | Activa/desactiva película — publica `movie.deactivated` solo al desactivar |
-| POST | `/movies/{id}/showtimes` | Crea funciones (showtimes) para una película |
-| DELETE | `/movies/{id}/showtimes/{showtime_id}` | Elimina una función |
-| POST | `/theaters` | Crea sala/teatro |
+| POST | `/movies/{id}/showtimes` | Crea funciones (showtimes) para una película — publica `showtime.created`, un evento por función |
+| DELETE | `/movies/{id}/showtimes/{showtime_id}` | Elimina una función — publica `showtime.deleted` |
+| POST | `/theaters` | Crea sala/teatro — publica `theater.created` |
 | GET | `/theaters` | Lista teatros |
-| PATCH | `/theaters/{id}/toggle` | Activa/desactiva teatro |
+| PATCH | `/theaters/{id}/toggle` | Activa/desactiva teatro — publica `theater.toggled` |
 | GET | `/users` | Lista usuarios (vía HTTP a `user-service`) |
 | GET | `/users/{id}` | Detalle de usuario (vía HTTP a `user-service`) |
 | PATCH | `/users/{id}/toggle` | Activa/desactiva usuario — la aplica `user-service` (publica `user.deactivated` solo al desactivar); aquí solo se valida que un admin no pueda desactivarse a sí mismo |
@@ -41,19 +43,23 @@ Todos los endpoints van bajo `/api/v1/admin` y requieren JWT de un usuario admin
 
 ## Eventos Kafka
 
-Solo publica — no consume nada. Ver el contrato completo (payload, semántica) en `../kafka-schemas-cinema/event_contracts_operativos.md`. `user.deactivated` ya no lo publica este servicio — desde el caso 2 lo publica `user-service`, que es quien aplica el cambio.
+Solo publica — no consume nada. Todos van con `key` = id de la entidad (garantiza orden entre eventos de la misma película/teatro/función — ver `../ARCHITECTURE.md`, Decisión 6.2). Ver el contrato completo (payload, semántica) en `../kafka-schemas-cinema/event_contracts_operativos.md`. `user.deactivated` ya no lo publica este servicio — desde el caso 2 lo publica `user-service`, que es quien aplica el cambio.
 
 | Topic | Cuándo |
 |---|---|
-| `movie.created` | Al crear una película |
-| `movie.updated` | Al editar campos de una película |
+| `movie.created` | Al crear una película — payload es el `Movie` completo (no solo el subconjunto de `booking-service`), más `theater_ids` |
+| `movie.updated` | Al editar campos de una película — solo los campos que cambiaron |
 | `movie.deactivated` | Al desactivar una película (no al reactivar) |
+| `theater.created` | Al crear un teatro |
+| `theater.toggled` | Al activar/desactivar un teatro |
+| `showtime.created` | Al crear funciones — un evento por función, no un batch |
+| `showtime.deleted` | Al eliminar una función |
 
 ## Variables de entorno clave
 
 | Variable | Para qué |
 |---|---|
-| `DATABASE_URL_CATALOG` | Conexión a `cinema_catalog` (películas, teatros, funciones) |
+| `DATABASE_URL_ADMIN` | Conexión a `cinema_admin`, propia de este servicio (películas, teatros, funciones) |
 | `USER_SERVICE_URL` | URL de `user-service` — resuelve auth/autorización del panel y el CRUD de usuarios (default local: `http://user-service:8008`) |
 | `BOOKING_SERVICE_URL` | URL de `booking-service` — compras y reportes de ventas (default local: `http://booking-service:8004`) |
 | `INTERNAL_SERVICE_TOKEN` | Header `X-Internal-Token` en las llamadas a `user-service`/`booking-service` — debe coincidir con el mismo valor allá |
@@ -69,9 +75,9 @@ Qué variable va en cuál entorno: `../IMPLEMENTATION-GUIDE.md` Fase 4.4.
 
 - **HTTP** → `user-service` (`/api/v1/users/internal/*`, protegido por `X-Internal-Token`): resuelve auth/autorización del panel (`get_current_admin`) y el CRUD de `/admin/users`. Desde 2026-09-19 — antes era una conexión directa a `cinema_users` (ver `../ARCHITECTURE.md`, "Aislamiento de base de datos por servicio", caso 2).
 - **HTTP** → `booking-service` (`/api/v1/purchases/internal/admin/*`, protegido por `X-Internal-Token`): `/purchases*` y `/reports/*`. Desde 2026-09-19 — antes era una conexión directa a `cinema_booking` (caso 3 de la misma decisión).
-- **Base de datos compartida** (pendiente de resolver — caso 1, el único que queda):
-  - Comparte `cinema_catalog` con `catalog-service` (mismo esquema de películas/teatros).
-- Sus eventos Kafka de películas (`movie.*`) son la forma en que `catalog-service`/`booking-service` se enteran de cambios hechos aquí sin consultar `cinema_catalog` directamente — aunque hoy `catalog-service` no los consume todavía (ver `HALLAZGOS.md`).
+- **Kafka** → `catalog-service` (`movie.*`/`theater.*`/`showtime.*`) y `booking-service` (`movie.*`): así se enteran de cambios hechos aquí sin consultar `cinema_admin` directamente. Desde 2026-09-19, `catalog-service` sí los consume — antes compartía la misma base y no le hacían falta (caso 1 de la misma decisión).
+
+Ya no comparte ninguna base de datos con otro servicio.
 
 ## Correr en local
 
