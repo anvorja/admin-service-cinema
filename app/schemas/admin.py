@@ -1,5 +1,4 @@
 # app/schemas/admin.py
-import hashlib
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, HttpUrl
 from datetime import datetime, date

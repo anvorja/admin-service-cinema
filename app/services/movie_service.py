@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from fastapi import HTTPException, status
 
 from app.models.movie import Movie, MovieStatus
-from app.models.theater import Theater, TheaterMovie, MovieShowtime, ShowtimeFormat
+from app.models.theater import TheaterMovie, MovieShowtime, ShowtimeFormat
 from app.schemas.admin import MovieCreate, MovieUpdate
 from app.core.cache import cache
 

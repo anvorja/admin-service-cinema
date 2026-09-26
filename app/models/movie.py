@@ -1,6 +1,6 @@
 # app/models/movie.py
 from datetime import date
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, TYPE_CHECKING
 from urllib.parse import urlparse
 import enum
 
